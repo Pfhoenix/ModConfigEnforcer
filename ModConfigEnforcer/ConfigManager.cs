@@ -94,6 +94,9 @@ namespace ModConfigEnforcer
 		const string ConfigRPCName = "SetConfigValues";
 
 		public delegate void ServerConfigReceivedDelegate();
+		/// <summary>
+		/// This is being deprecated
+		/// </summary>
 		public static event ServerConfigReceivedDelegate ServerConfigReceived;
 
 		class ModConfig
@@ -101,6 +104,31 @@ namespace ModConfigEnforcer
 			public string Name;
 			public ConfigFile Config;
 			public List<IConfigVariable> Variables = new List<IConfigVariable>();
+			public ServerConfigReceivedDelegate ServerConfigReceived;
+
+			public void Serialize(ZPackage zpg)
+			{
+				bool serialized = false;
+				foreach (var mcv in Variables)
+				{
+					if (mcv.LocalOnly()) continue;
+					if (!serialized)
+					{
+						serialized = true;
+						zpg.Write(Name);
+					}
+					mcv.Serialize(zpg);
+				}
+			}
+
+			public void Deserialize(ZPackage zpg)
+			{
+				foreach (var mcv in Variables)
+				{
+					if (mcv.LocalOnly()) continue;
+					zpg.ReadVariable(mcv);
+				}
+			}
 		}
 
 		public static bool ShouldUseLocalConfig = true;
@@ -108,16 +136,16 @@ namespace ModConfigEnforcer
 		static readonly List<string> Mods = new List<string>();
 		static readonly Dictionary<string, ModConfig> ModConfigs = new Dictionary<string, ModConfig>();
 
-		public static void RegisterRPC(ZRoutedRpc zrpc)
+		public static void RegisterRPC(ZRpc zrpc)
 		{
-			zrpc.Register(ConfigRPCName, new Action<long, ZPackage>(SetConfigValues));
+			zrpc.Register<ZPackage>(ConfigRPCName, SetConfigValues);
 		}
 
-		public static void RegisterMod(string modName, ConfigFile configFile)
+		public static void RegisterMod(string modName, ConfigFile configFile, ServerConfigReceivedDelegate scrd = null)
 		{
 			if (ModConfigs.ContainsKey(modName)) return;
 			Mods.Add(modName);
-			ModConfigs[modName] = new ModConfig { Name = modName, Config = configFile };
+			ModConfigs[modName] = new ModConfig { Name = modName, Config = configFile, ServerConfigReceived = scrd };
 		}
 
 		public static ConfigVariable<T> RegisterModConfigVariable<T>(string modName, string varName, T defaultValue, string configSection, string configDescription, bool localOnly)
@@ -179,41 +207,68 @@ namespace ModConfigEnforcer
 			ZRpc.Serialize(ps, ref zp);
 		}
 
-		public static void SendConfigToClient(long peerID)
+		static bool SerializeMod(string modname, ZPackage zpg)
+		{
+			if (!ModConfigs.TryGetValue(modname, out var modconfig)) return false;
+			modconfig.Serialize(zpg);
+			return true;
+		}
+
+		public static void SendConfigToClient(string modname, long peerID = 0L)
+		{
+			if (!ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()) return;
+
+			ZPackage zpg = new ZPackage();
+			if (!SerializeMod(modname, zpg)) return;
+			zpg.SetPos(0);
+			ZNet.instance.m_routedRpc.InvokeRoutedRPC(peerID, ConfigRPCName, zpg);
+		}
+
+		public static void SendConfigsToClient(ZRpc rpc)
 		{
 			if (!ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()) return;
 
 			ZPackage zpg = new ZPackage();
 			foreach (string m in Mods)
 			{
-				if (!ModConfigs.TryGetValue(m, out var modconfig)) continue;
-				foreach (var mcv in modconfig.Variables)
-				{
-					if (mcv.LocalOnly()) continue;
-					mcv.Serialize(zpg);
-				}
+				SerializeMod(m, zpg);
 			}
 			zpg.SetPos(0);
-			ZNet.instance.m_routedRpc.InvokeRoutedRPC(peerID, ConfigRPCName, zpg);
+			rpc.Invoke(ConfigRPCName, zpg);
 		}
 
-		static void SetConfigValues(long sender, ZPackage zpg)
+		static void SetConfigValues(ZRpc rpc, ZPackage zpg)
 		{
-			if (ZNet.instance.IsDedicated() && ZNet.instance.IsServer()) return;
+			Plugin.Log.LogInfo("Client received SetConfigValues");
 
-			foreach (string m in Mods)
+			if (ZNet.instance.IsDedicated() || ZNet.instance.IsServer())
 			{
-				if (!ModConfigs.TryGetValue(m, out var modconfig)) continue;
-				Plugin.Log.LogInfo("Setting config variables for " + m);
-				foreach (var mcv in modconfig.Variables)
+				Plugin.Log.LogWarning("Server should not be sent config values!");
+				return;
+			}
+
+			string m = zpg.ReadString();
+			Dictionary<string, ModConfig> mods = new Dictionary<string, ModConfig>();
+			while (!string.IsNullOrWhiteSpace(m))
+			{
+				if (!ModConfigs.TryGetValue(m, out var modconfig))
 				{
-					if (mcv.LocalOnly()) continue;
-					zpg.ReadVariable(mcv);
+					Plugin.Log.LogError("Could not find registered mod " + m);
+					return;
 				}
+				modconfig.Deserialize(zpg);
+				mods[m] = modconfig;
+				Plugin.Log.LogDebug("Client updated with settings for mod " + m);
+				if (zpg.GetPos() < zpg.Size()) m = zpg.ReadString();
+				else m = null;
 			}
 
 			ShouldUseLocalConfig = false;
 
+			foreach (var mod in mods.Values)
+				mod.ServerConfigReceived?.Invoke();
+
+			// this is to support mods that haven't switched to the new method yet
 			ServerConfigReceived?.Invoke();
 		}
 	}
