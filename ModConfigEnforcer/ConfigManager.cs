@@ -247,6 +247,8 @@ namespace ModConfigEnforcer
 				return;
 			}
 
+			ShouldUseLocalConfig = false;
+
 			string m = zpg.ReadString();
 			Dictionary<string, ModConfig> mods = new Dictionary<string, ModConfig>();
 			while (!string.IsNullOrWhiteSpace(m))
@@ -262,8 +264,6 @@ namespace ModConfigEnforcer
 				if (zpg.GetPos() < zpg.Size()) m = zpg.ReadString();
 				else m = null;
 			}
-
-			ShouldUseLocalConfig = false;
 
 			foreach (var mod in mods.Values)
 				mod.ServerConfigReceived?.Invoke();
