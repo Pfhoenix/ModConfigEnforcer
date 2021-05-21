@@ -231,7 +231,15 @@ namespace ModConfigEnforcer
 			ZPackage zpg = new ZPackage();
 			foreach (string m in Mods)
 			{
-				SerializeMod(m, zpg);
+				ZPackage mzpg = new ZPackage();
+				SerializeMod(m, mzpg);
+				if (zpg.Size() + mzpg.Size() > 500000)
+				{
+					zpg.SetPos(0);
+					rpc.Invoke(ConfigRPCName, zpg);
+					zpg = mzpg;
+				}
+				else zpg.Write(mzpg);
 			}
 			zpg.SetPos(0);
 			rpc.Invoke(ConfigRPCName, zpg);
@@ -249,27 +257,35 @@ namespace ModConfigEnforcer
 
 			ShouldUseLocalConfig = false;
 
-			string m = zpg.ReadString();
 			Dictionary<string, ModConfig> mods = new Dictionary<string, ModConfig>();
-			while (!string.IsNullOrWhiteSpace(m))
+
+			try
 			{
-				if (!ModConfigs.TryGetValue(m, out var modconfig))
+				ZPackage mzpg = zpg.ReadPackage();
+				while (mzpg != null)
 				{
-					Plugin.Log.LogError("Could not find registered mod " + m);
-					return;
+					string m = mzpg.ReadString();
+					if (!string.IsNullOrWhiteSpace(m))
+					{
+						if (!ModConfigs.TryGetValue(m, out var modconfig))
+						{
+							Plugin.Log.LogError("Could not find registered mod " + m);
+						}
+						else
+						{
+							modconfig.Deserialize(mzpg);
+							mods[m] = modconfig;
+							Plugin.Log.LogDebug("Client updated with settings for mod " + m);
+						}
+					}
+
+					mzpg = zpg.ReadPackage();
 				}
-				modconfig.Deserialize(zpg);
-				mods[m] = modconfig;
-				Plugin.Log.LogDebug("Client updated with settings for mod " + m);
-				if (zpg.GetPos() < zpg.Size()) m = zpg.ReadString();
-				else m = null;
 			}
+			catch { }
 
 			foreach (var mod in mods.Values)
 				mod.ServerConfigReceived?.Invoke();
-
-			// this is to support mods that haven't switched to the new method yet
-			ServerConfigReceived?.Invoke();
 		}
 	}
 }

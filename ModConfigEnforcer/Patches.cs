@@ -8,6 +8,13 @@ namespace ModConfigEnforcer
 		public static class ZNetPatches
 		{
 			[HarmonyPrefix]
+			[HarmonyPatch("Awake")]
+			public static void AwakePrefix(ZNet __instance)
+			{
+				ConfigManager.ShouldUseLocalConfig = true;
+			}
+
+			[HarmonyPrefix]
 			[HarmonyPriority(int.MaxValue)]
 			[HarmonyPatch("OnNewConnection")]
 			public static void OnNewConnectionPrefix(ZNet __instance, ZNetPeer peer)
