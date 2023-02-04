@@ -156,6 +156,14 @@ namespace ModConfigEnforcer
 			return cv;
 		}
 
+		public static ConfigVariable<T> RegisterModConfigVariable<T>(string modName, string varName, T defaultValue, string configSection, ConfigDescription configDescription, bool localOnly)
+		{
+			if (!ModConfigs.TryGetValue(modName, out ModConfig mc)) return null;
+			var cv = new ConfigVariable<T>(mc.Config, configSection, varName, defaultValue, configDescription, localOnly);
+			mc.Variables.Add(cv);
+			return cv;
+		}
+
 		public static bool RegisterModConfigVariable(string modName, IConfigVariable cv)
 		{
 			if (!ModConfigs.TryGetValue(modName, out ModConfig mc)) return false;
