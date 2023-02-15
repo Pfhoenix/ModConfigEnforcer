@@ -74,7 +74,6 @@ namespace ModConfigEnforcer
 			T t = (T)o;
 			if (ConfigManager.ShouldUseLocalConfig) _ConfigFileEntry.Value = t;
 			else _LocalValue = t;
-			Plugin.Log.LogInfo("Setting " + Key + " to " + t.ToString());
 		}
 
 		public void Serialize(ZPackage zpg)
@@ -82,6 +81,52 @@ namespace ModConfigEnforcer
 			object v = GetValue();
 			zpg.FillZPackage(GetValueType().IsEnum ? (int)v : v);
 		}
+
+		public bool Deserialize(ZPackage zpg)
+		{
+			return false;
+		}
+	}
+
+	public class ClientVariable<T> : IConfigVariable
+	{
+		T _Value;
+
+		string Name;
+		public T Value => _Value;
+
+		public ClientVariable(string name, T value)
+		{
+			Name = name;
+			_Value = value;
+		}
+
+		public string GetName()
+		{
+			return Name;
+		}
+
+		public object GetValue()
+		{
+			return Value;
+		}
+
+		public Type GetValueType()
+		{
+			return typeof(T);
+		}
+
+		public void SetValue(object o)
+		{
+			_Value = (T)o;
+		}
+
+		public bool LocalOnly()
+		{
+			return true;
+		}
+
+		public void Serialize(ZPackage zpg) { }
 
 		public bool Deserialize(ZPackage zpg)
 		{
@@ -98,6 +143,9 @@ namespace ModConfigEnforcer
 		/// This is being deprecated
 		/// </summary>
 		public static event ServerConfigReceivedDelegate ServerConfigReceived;
+
+		public delegate void UnknownModConfigReceivedDelegate(string modName);
+		public static event UnknownModConfigReceivedDelegate UnknownModConfigReceived;
 
 		class ModConfig
 		{
@@ -162,6 +210,13 @@ namespace ModConfigEnforcer
 			var cv = new ConfigVariable<T>(mc.Config, configSection, varName, defaultValue, configDescription, localOnly);
 			mc.Variables.Add(cv);
 			return cv;
+		}
+
+		public static ClientVariable<T> RegisterClientVariable<T>(string modName, string varName, T value)
+		{
+			var cv = new ClientVariable<T>(varName, value);
+			if (RegisterModConfigVariable(modName, cv)) return cv;
+			else return null;
 		}
 
 		public static bool RegisterModConfigVariable(string modName, IConfigVariable cv)
@@ -249,8 +304,11 @@ namespace ModConfigEnforcer
 				}
 				else zpg.Write(mzpg);
 			}
-			zpg.SetPos(0);
-			rpc.Invoke(ConfigRPCName, zpg);
+			if (zpg.Size() > 0)
+			{
+				zpg.SetPos(0);
+				rpc.Invoke(ConfigRPCName, zpg);
+			}
 		}
 
 		static void SetConfigValues(ZRpc rpc, ZPackage zpg)
@@ -277,14 +335,19 @@ namespace ModConfigEnforcer
 					{
 						if (!ModConfigs.TryGetValue(m, out var modconfig))
 						{
-							Plugin.Log.LogError("Could not find registered mod " + m);
+							// this gives any registered mods a chance to claim or create a new mod config to receive the incoming data
+							UnknownModConfigReceived?.Invoke(m);
+							if (!ModConfigs.TryGetValue(m, out modconfig))
+							{
+								Plugin.Log.LogError("Could not find registered mod " + m);
+								continue;
+							}
+							else Plugin.Log.LogInfo("Client received data for previously unregistered mod config " + m);
 						}
-						else
-						{
-							modconfig.Deserialize(mzpg);
-							mods[m] = modconfig;
-							Plugin.Log.LogDebug("Client updated with settings for mod " + m);
-						}
+
+						modconfig.Deserialize(mzpg);
+						mods[m] = modconfig;
+						Plugin.Log.LogDebug("Client updated with settings for mod " + m);
 					}
 
 					mzpg = zpg.ReadPackage();
