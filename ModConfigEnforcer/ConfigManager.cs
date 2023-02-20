@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
 using BepInEx.Configuration;
 using UnityEngine;
 
@@ -13,7 +15,7 @@ namespace ModConfigEnforcer
 		void SetValue(object o);
 		Type GetValueType();
 		/// <summary>
-		/// Serialize is called when an IConfigVariable implementation is wrapping a data type that the normal serialization process doesn't know how to handle
+		/// Serialize is called when an IConfigVariable implementation needs to serialize its data. This is always called.
 		/// </summary>
 		/// <param name="zpg">The ZPackage object that will be sent over the network</param>
 		void Serialize(ZPackage zpg);
@@ -23,6 +25,55 @@ namespace ModConfigEnforcer
 		/// <param name="zpg">The ZPackage object received by the client</param>
 		/// <returns>Whether or not the deserialization was successful</returns>
 		bool Deserialize(ZPackage zpg);
+	}
+
+	// need a new class, AutomatedConfigWrapper<T> : IConfigVariable
+	// it just reads/writes to/from the passed in ConfigEntry<T>
+	public class AutomatedConfigWrapper<T> : IConfigVariable
+	{
+		ConfigEntry<T> _ConfigFileEntry;
+		FieldInfo _TypedValueFI;
+		T _LastValidValue;
+
+		public AutomatedConfigWrapper(ConfigEntry<T> configEntry)
+		{
+			_ConfigFileEntry = configEntry;
+			_ConfigFileEntry.SettingChanged += SettingChanged;
+			_TypedValueFI = configEntry.GetType().GetField("_typedValue", BindingFlags.Instance | BindingFlags.NonPublic);
+		}
+
+		// this is an attempt to catch the configentry value being changed by the client
+		void SettingChanged(object sender, EventArgs e)
+		{
+			if (!_LastValidValue.Equals(_ConfigFileEntry.Value))
+			{
+				if (!ConfigManager.ShouldUseLocalConfig)
+				{
+					Plugin.Log.LogWarning("Client tried to change a server set config value!");
+					SetValue(_LastValidValue);
+				}
+				else _LastValidValue = (T)GetValue();
+			}
+		}
+
+		public string GetName() => _ConfigFileEntry.Definition.Key;
+		public bool LocalOnly() => false;
+		public Type GetValueType() => typeof(T);
+		public object GetValue() => ConfigManager.ShouldUseLocalConfig ? _ConfigFileEntry.Value : _LastValidValue;
+		
+		public void SetValue(object o)
+		{
+			_LastValidValue = (T)o;
+			if (ConfigManager.ShouldUseLocalConfig) _ConfigFileEntry.Value = _LastValidValue;
+			else _TypedValueFI.SetValue(_ConfigFileEntry, o);
+		}
+
+		public void Serialize(ZPackage zpg)
+		{
+			object v = GetValue();
+			zpg.FillZPackage(GetValueType().IsEnum ? (int)v : v);
+		}
+		public bool Deserialize(ZPackage zpg) => false;
 	}
 
 	public class ConfigVariable<T> : IConfigVariable
@@ -47,27 +98,19 @@ namespace ModConfigEnforcer
 			_LocalOnly = localOnly;
 		}
 
+		public ConfigVariable(ConfigEntry<T> configFileEntry)
+		{
+			_ConfigFileEntry = configFileEntry;
+			_LocalValue = _ConfigFileEntry.Value;
+			_LocalOnly = false;
+		}
+
 		public T Value => _LocalOnly ? _ConfigFileEntry.Value : (ConfigManager.ShouldUseLocalConfig ? _ConfigFileEntry.Value : _LocalValue);
 
-		public string GetName()
-		{
-			return Key;
-		}
-
-		public bool LocalOnly()
-		{
-			return _LocalOnly;
-		}
-
-		public Type GetValueType()
-		{
-			return typeof(T);
-		}
-
-		public object GetValue()
-		{
-			return Value;
-		}
+		public string GetName() => Key;
+		public bool LocalOnly() => _LocalOnly;
+		public Type GetValueType() => typeof(T);
+		public object GetValue() => Value;
 
 		public void SetValue(object o)
 		{
@@ -82,10 +125,7 @@ namespace ModConfigEnforcer
 			zpg.FillZPackage(GetValueType().IsEnum ? (int)v : v);
 		}
 
-		public bool Deserialize(ZPackage zpg)
-		{
-			return false;
-		}
+		public bool Deserialize(ZPackage zpg) => false;
 	}
 
 	public class ClientVariable<T> : IConfigVariable
@@ -101,58 +141,48 @@ namespace ModConfigEnforcer
 			_Value = value;
 		}
 
-		public string GetName()
-		{
-			return Name;
-		}
-
-		public object GetValue()
-		{
-			return Value;
-		}
-
-		public Type GetValueType()
-		{
-			return typeof(T);
-		}
+		public string GetName() => Name;
+		public object GetValue() => Value;
+		public Type GetValueType() => typeof(T);
 
 		public void SetValue(object o)
 		{
 			_Value = (T)o;
 		}
 
-		public bool LocalOnly()
-		{
-			return true;
-		}
-
+		public bool LocalOnly() => true;
 		public void Serialize(ZPackage zpg) { }
-
-		public bool Deserialize(ZPackage zpg)
-		{
-			return false;
-		}
+		public bool Deserialize(ZPackage zpg) => false;
 	}
 
 	public static class ConfigManager
 	{
 		const string ConfigRPCName = "SetConfigValues";
 
-		public delegate void ServerConfigReceivedDelegate();
-		/// <summary>
-		/// This is being deprecated
-		/// </summary>
-		public static event ServerConfigReceivedDelegate ServerConfigReceived;
+		public static event Action<string> UnknownModConfigReceived;
 
-		public delegate void UnknownModConfigReceivedDelegate(string modName);
-		public static event UnknownModConfigReceivedDelegate UnknownModConfigReceived;
-
-		class ModConfig
+		public class ModConfig
 		{
 			public string Name;
 			public ConfigFile Config;
 			public List<IConfigVariable> Variables = new List<IConfigVariable>();
-			public ServerConfigReceivedDelegate ServerConfigReceived;
+			public Action ServerConfigReceived;
+			public Action ConfigReloaded;
+
+			public string GetRegistrationType()
+			{
+				bool manual = false;
+				bool auto = false;
+				foreach (var v in Variables)
+				{
+					if (v.GetType() == typeof(ConfigVariable<>)) manual = true;
+					else if (v.GetType() == typeof(AutomatedConfigWrapper<>)) auto = true;
+				}
+
+				if (manual && auto) return "manual and automated discovery";
+				else if (manual) return "manual";
+				else return "automated discovery";
+			}
 
 			public void Serialize(ZPackage zpg)
 			{
@@ -183,17 +213,59 @@ namespace ModConfigEnforcer
 
 		static readonly List<string> Mods = new List<string>();
 		static readonly Dictionary<string, ModConfig> ModConfigs = new Dictionary<string, ModConfig>();
+		static readonly Dictionary<string, IConfigVariable> AutomatedConfigsLocked = new Dictionary<string, IConfigVariable>();
+
+		public static bool IsConfigLocked(string name)
+		{
+			return AutomatedConfigsLocked.ContainsKey(name);
+		}
 
 		public static void RegisterRPC(ZRpc zrpc)
 		{
 			zrpc.Register<ZPackage>(ConfigRPCName, SetConfigValues);
 		}
 
-		public static void RegisterMod(string modName, ConfigFile configFile, ServerConfigReceivedDelegate scrd = null)
+		public static List<ModConfig> GetRegisteredModConfigs() => ModConfigs.Values.ToList();
+		public static ModConfig GetRegisteredModConfig(string name, bool ignoreCase)
 		{
-			if (ModConfigs.ContainsKey(modName)) return;
+			if (!ignoreCase)
+			{
+				if (ModConfigs.TryGetValue(name, out var mc)) return mc;
+				else return null;
+			}
+			else
+			{
+				return ModConfigs.Values.FirstOrDefault(mc => string.Compare(mc.Name, name, true) == 0);
+			}
+		}
+
+		public static void RegisterMod(string modName, ConfigFile configFile, Action scrd = null, Action cr = null)
+		{
+			if (ModConfigs.TryGetValue(modName, out var mc))
+			{
+				mc.Variables.Clear();
+				return;
+			}
+			
 			Mods.Add(modName);
-			ModConfigs[modName] = new ModConfig { Name = modName, Config = configFile, ServerConfigReceived = scrd };
+			ModConfigs[modName] = new ModConfig { Name = modName, Config = configFile, ServerConfigReceived = scrd, ConfigReloaded = cr };
+			configFile.ConfigReloaded += ConfigFile_ConfigReloaded;
+		}
+
+		static void ConfigFile_ConfigReloaded(object sender, EventArgs e)
+		{
+			if (!ZNet.instance) return;
+			if (!ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()) return;
+
+			List<ModConfig> updatedModConfigs = new List<ModConfig>();
+
+			foreach (var mc in ModConfigs.Values.Where(mc => mc.Config == sender))
+			{
+				updatedModConfigs.Add(mc);
+				mc.ConfigReloaded?.Invoke();
+			}
+
+			if (updatedModConfigs.Count > 0) SendConfigsToClients(updatedModConfigs);
 		}
 
 		public static ConfigVariable<T> RegisterModConfigVariable<T>(string modName, string varName, T defaultValue, string configSection, string configDescription, bool localOnly)
@@ -210,6 +282,14 @@ namespace ModConfigEnforcer
 			var cv = new ConfigVariable<T>(mc.Config, configSection, varName, defaultValue, configDescription, localOnly);
 			mc.Variables.Add(cv);
 			return cv;
+		}
+
+		public static void RegisterAutomatedModConfigVariable<T>(string modName, ConfigEntry<T> entry)
+		{
+			if (entry == null || !ModConfigs.TryGetValue(modName, out ModConfig mc)) return;
+			AutomatedConfigWrapper<T> acw = new AutomatedConfigWrapper<T>(entry);
+			AutomatedConfigsLocked.Add(acw.GetName(), acw);
+			mc.Variables.Add(acw);
 		}
 
 		public static ClientVariable<T> RegisterClientVariable<T>(string modName, string varName, T value)
@@ -287,6 +367,30 @@ namespace ModConfigEnforcer
 			ZNet.instance.m_routedRpc.InvokeRoutedRPC(peerID, ConfigRPCName, zpg);
 		}
 
+		static void SendConfigsToClients(List<ModConfig> list)
+		{
+			if (!ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()) return;
+
+			ZPackage zpg = new ZPackage();
+			foreach (string m in Mods)
+			{
+				ZPackage mzpg = new ZPackage();
+				SerializeMod(m, mzpg);
+				if (zpg.Size() + mzpg.Size() > 500000)
+				{
+					zpg.SetPos(0);
+					ZNet.instance.m_routedRpc.InvokeRoutedRPC(ZNetView.Everybody, ConfigRPCName, zpg);
+					zpg = mzpg;
+				}
+				else zpg.Write(mzpg);
+			}
+			if (zpg.Size() > 0)
+			{
+				zpg.SetPos(0);
+				ZNet.instance.m_routedRpc.InvokeRoutedRPC(ZNetView.Everybody, ConfigRPCName, zpg);
+			}
+		}
+
 		public static void SendConfigsToClient(ZRpc rpc)
 		{
 			if (!ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()) return;
@@ -353,10 +457,20 @@ namespace ModConfigEnforcer
 					mzpg = zpg.ReadPackage();
 				}
 			}
-			catch { }
+			catch (Exception ex)
+			{
+				Plugin.Log.LogError("Exception on client SetConfigValues: " + ex.Message);
+			}
 
 			foreach (var mod in mods.Values)
 				mod.ServerConfigReceived?.Invoke();
+		}
+
+		public static void ClearModConfigs()
+		{
+			Mods.Clear();
+			ModConfigs.Clear();
+			AutomatedConfigsLocked.Clear();
 		}
 	}
 }

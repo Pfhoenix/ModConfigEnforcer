@@ -1,4 +1,9 @@
-﻿using HarmonyLib;
+﻿using System.Reflection;
+using System.Runtime.InteropServices.WindowsRuntime;
+using BepInEx.Configuration;
+using HarmonyLib;
+using JetBrains.Annotations;
+using UnityEngine;
 
 namespace ModConfigEnforcer
 {
@@ -30,6 +35,91 @@ namespace ModConfigEnforcer
 			{
 				if (!__instance.IsDedicated() && !__instance.IsServer()) return;
 				ConfigManager.SendConfigsToClient(rpc);
+			}
+		}
+
+		[HarmonyPatch(typeof(ConfigEntryBase))]
+		public static class BepinexConfigEntryBasePatch
+		{
+			[HarmonyPrefix]
+			[HarmonyPatch("OnSettingChanged")]
+			public static bool OnSettingChangedPrefix(object __instance)
+			{
+				return ConfigManager.IsConfigLocked(((ConfigEntryBase)__instance).Definition.Key) ? ConfigManager.ShouldUseLocalConfig : true;
+			}
+		}
+
+		[HarmonyPatch(typeof(Terminal))]
+		public static class TerminalPatches
+		{
+			[HarmonyPostfix]
+			[HarmonyPatch("InitTerminal")]
+			public static void InitTerminalPostfix(Terminal __instance)
+			{
+				new Terminal.ConsoleCommand("mce", "shows info for Mod Config Enforcer", delegate (Terminal.ConsoleEventArgs args)
+				{
+					for (int i = 0; i < args.Args.Length; i++)
+					{
+						args.Args[i] = args[i].ToLower();
+					}
+
+					if (args.Length == 2)
+					{
+						if (args[1] == "list")
+						{
+							// display registered mods (and whether auto-discovered or not)
+							foreach (var mc in ConfigManager.GetRegisteredModConfigs())
+							{
+								args.Context.AddString(".. " + mc.Name + " (" + mc.GetRegistrationType() + ")");
+							}
+						}
+						else if (args[1] == "reload" && (ZNet.instance.IsDedicated() || ZNet.instance.IsServer()))
+						{
+							args.Context.AddString(".. missing mod registration name");
+						}
+						else args.Context.AddString(".. unknown command option '" + args[1] + "'");
+					}
+					else if (args.Length > 2)
+					{
+						if (args[1] == "reload" && !ZNet.instance.IsDedicated() && !ZNet.instance.IsServer())
+						{
+							args.Context.AddString("<color=orange>mce reload</color> is not available on clients in multiplayer.");
+							return;
+						}
+
+						if (args[1] == "list" || args[1] == "reload")
+						{
+							string modname = "";
+							for (int i = 2; i < args.Length; i++)
+								modname += i > 2 ? " " + args[i] : args[i];
+							var mc = ConfigManager.GetRegisteredModConfig(modname, true);
+							if (mc == null) args.Context.AddString(".. mod named '" + modname + "' not found!");
+							else if (args[1] == "list")
+							{
+								foreach (var v in mc.Variables)
+								{
+									string vn = v.GetType().Name;
+									vn = vn.Remove(vn.IndexOf('`'));
+									args.Context.AddString(".. " + v.GetName() + " :" + (v.LocalOnly() ? " localOnly " : " ") + vn + " : " + v.GetValue());
+								}
+							}
+							else
+							{
+								args.Context.AddString(".. reloading config for " + modname);
+								mc.Config.Reload();
+							}
+						}
+						else args.Context.AddString(".. unknown command option '" + args[1] + "'");
+					}
+					else
+					{
+						args.Context.AddString("<color=orange>mce</color> command supports the following options :");
+						args.Context.AddString("<color=yellow>list</color> - displays a list of each mod registered with MCE and their registration method");
+						args.Context.AddString("<color=yellow>list <mod registration name></color> - displays a list of all config options registered for the mod");
+						if (ZNet.instance.IsDedicated() || ZNet.instance.IsServer())
+							args.Context.AddString("<color=yellow>reload <mod registration name></color> - reloads the config options from file for the mod (on servers, this will also send configs to all clients)");
+					}
+				});
 			}
 		}
 	}
