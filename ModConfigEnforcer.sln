@@ -1,9 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 16
-VisualStudioVersion = 16.0.31105.61
+# Visual Studio Version 17
+VisualStudioVersion = 17.4.33403.182
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ModConfigEnforcer", "ModConfigEnforcer\ModConfigEnforcer.csproj", "{7E7B5C74-DDFD-4667-980A-04C189E07C67}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MCE_Test", "MCE_Test\MCE_Test.csproj", "{BECDD8DB-651E-466B-81D9-64189333BC43}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,6 +17,10 @@ Global
 		{7E7B5C74-DDFD-4667-980A-04C189E07C67}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{7E7B5C74-DDFD-4667-980A-04C189E07C67}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{7E7B5C74-DDFD-4667-980A-04C189E07C67}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BECDD8DB-651E-466B-81D9-64189333BC43}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BECDD8DB-651E-466B-81D9-64189333BC43}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BECDD8DB-651E-466B-81D9-64189333BC43}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BECDD8DB-651E-466B-81D9-64189333BC43}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
