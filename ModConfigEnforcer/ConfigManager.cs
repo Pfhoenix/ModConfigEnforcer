@@ -45,13 +45,10 @@ namespace ModConfigEnforcer
 		// this is an attempt to catch the configentry value being changed by the client
 		void SettingChanged(object sender, EventArgs e)
 		{
-			Plugin.Log.LogDebug("Setting changed for " + GetName());
 			if (!_LastValidValue.Equals(_ConfigFileEntry.Value))
 			{
-				Plugin.Log.LogDebug("... last valid value different!");
 				if (!ConfigManager.ShouldUseLocalConfig)
 				{
-					Plugin.Log.LogWarning("Client tried to change a server set config value!");
 					SetValue(_LastValidValue);
 				}
 				else _LastValidValue = (T)GetValue();
