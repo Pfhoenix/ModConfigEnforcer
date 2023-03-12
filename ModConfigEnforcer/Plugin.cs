@@ -78,7 +78,6 @@ namespace ModConfigEnforcer
 							{
 								modName = pi.Metadata.Name;
 								ConfigManager.RegisterMod(modName, pi.Instance.Config, scr, null);
-								pi.Instance.Config.SaveOnConfigSet = false;
 							}
 							var tcmmi = cmmi.MakeGenericMethod(field.FieldType.GetGenericArguments()[0]);
 							tcmmi.Invoke(null, new object[] { modName, field.GetValue(pi.Instance) });
