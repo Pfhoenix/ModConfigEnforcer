@@ -1,3 +1,6 @@
+## 3.0.2
+* Fixed console commands so they can be run at the main menu
+
 ## 3.0.1
 * Fixed automatic discovered mods not being able to save config changes
 

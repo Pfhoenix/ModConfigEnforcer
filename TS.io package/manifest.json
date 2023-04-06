@@ -1,6 +1,6 @@
 {
     "name": "ModConfigEnforcer",
-    "version_number": "3.0.1",
+    "version_number": "3.0.2",
     "website_url": "",
     "description": "Mod Config Enforcer is a utility mod for mod authors. It allows them to support servers setting configs and then enforcing those settings onto connecting clients using their mod.",
     "dependencies": []

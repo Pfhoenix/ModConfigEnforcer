@@ -11,7 +11,7 @@ namespace ModConfigEnforcer
 	[BepInPlugin("pfhoenix.modconfigenforcer", "Mod Config Enforcer", Plugin.Version)]
 	public class Plugin : BaseUnityPlugin
 	{
-		public const string Version = "3.0.1";
+		public const string Version = "3.0.2";
 		Harmony _Harmony;
 		public static ManualLogSource Log;
 

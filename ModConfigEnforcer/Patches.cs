@@ -1,9 +1,5 @@
-﻿using System.Reflection;
-using System.Runtime.InteropServices.WindowsRuntime;
-using BepInEx.Configuration;
+﻿using BepInEx.Configuration;
 using HarmonyLib;
-using JetBrains.Annotations;
-using UnityEngine;
 
 namespace ModConfigEnforcer
 {
@@ -73,7 +69,7 @@ namespace ModConfigEnforcer
 								args.Context.AddString(".. " + mc.Name + " (" + mc.GetRegistrationType() + ")");
 							}
 						}
-						else if (args[1] == "reload" && (ZNet.instance.IsDedicated() || ZNet.instance.IsServer()))
+						else if (args[1] == "reload" && (!ZNet.instance || ZNet.instance.IsDedicated() || ZNet.instance.IsServer()))
 						{
 							args.Context.AddString(".. missing mod registration name");
 						}
@@ -81,7 +77,7 @@ namespace ModConfigEnforcer
 					}
 					else if (args.Length > 2)
 					{
-						if (args[1] == "reload" && !ZNet.instance.IsDedicated() && !ZNet.instance.IsServer())
+						if (args[1] == "reload" && (ZNet.instance && !ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()))
 						{
 							args.Context.AddString("<color=orange>mce reload</color> is not available on clients in multiplayer.");
 							return;
@@ -116,7 +112,7 @@ namespace ModConfigEnforcer
 						args.Context.AddString("<color=orange>mce</color> command supports the following options :");
 						args.Context.AddString("<color=yellow>list</color> - displays a list of each mod registered with MCE and their registration method");
 						args.Context.AddString("<color=yellow>list <mod registration name></color> - displays a list of all config options registered for the mod");
-						if (ZNet.instance.IsDedicated() || ZNet.instance.IsServer())
+						if (!ZNet.instance || ZNet.instance.IsDedicated() || ZNet.instance.IsServer())
 							args.Context.AddString("<color=yellow>reload <mod registration name></color> - reloads the config options from file for the mod (on servers, this will also send configs to all clients)");
 					}
 				});
