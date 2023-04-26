@@ -7,9 +7,10 @@ using HarmonyLib;
 namespace MCE_Test
 {
 	[BepInPlugin("pfhoenix.mce_test", Plugin.ModName, Plugin.Version)]
+	[BepInDependency("pfhoenix.modconfigenforcer", BepInDependency.DependencyFlags.HardDependency)]
 	public class Plugin : BaseUnityPlugin
 	{
-		public const string Version = "6.6.6.4";
+		public const string Version = "6.6.6.5";
 		public const string ModName = "MCE Test Mod";
 		Harmony _Harmony;
 		public static ManualLogSource Log;
@@ -37,7 +38,7 @@ namespace MCE_Test
 
 		void ServerConfigReceived()
 		{
-			Log.LogInfo("MCE Test received server config!");
+			Log.LogInfo("MCE Test received server config! TestInt set to " + TestInt.Value);
 		}
 	}
 }

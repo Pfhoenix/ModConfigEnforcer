@@ -142,4 +142,4 @@ If you want to use custom configuration methods, that's also supported.
 If you have any questions or need help, find me on the [Valheim Modding discord server](https://discord.gg/89bBsvK5KC)﻿.
 
 If you want to look at the code to see how ModConfigEnforcer works, I've made the [GitHub repo public.](https://github.com/Pfhoenix/ModConfigEnforcer)
-If you'd like to donate, head to [my buymeacoffee account](https://www.buymeacoffee.com/pfhoenix).
+If you'd like to donate, head to [my Patreon page](https://www.patreon.com/pfhoenix).

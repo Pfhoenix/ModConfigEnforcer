@@ -1,9 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using BepInEx.Configuration;
 using UnityEngine;
+using ZstdNet;
 
 namespace ModConfigEnforcer
 {
@@ -14,6 +16,8 @@ namespace ModConfigEnforcer
 		object GetValue();
 		void SetValue(object o);
 		Type GetValueType();
+		bool ValueChanged { get ; set; }
+
 		/// <summary>
 		/// Serialize is called when an IConfigVariable implementation needs to serialize its data. This is always called.
 		/// </summary>
@@ -34,6 +38,8 @@ namespace ModConfigEnforcer
 		ConfigEntry<T> _ConfigFileEntry;
 		FieldInfo _TypedValueFI;
 		T _LastValidValue;
+
+		public bool ValueChanged { get; set; }
 
 		public AutomatedConfigWrapper(ConfigEntry<T> configEntry)
 		{
@@ -63,7 +69,11 @@ namespace ModConfigEnforcer
 		public void SetValue(object o)
 		{
 			_LastValidValue = (T)o;
-			if (ConfigManager.ShouldUseLocalConfig) _ConfigFileEntry.Value = _LastValidValue;
+			if (ConfigManager.ShouldUseLocalConfig)
+			{
+				ValueChanged = !_ConfigFileEntry.Value.Equals(_LastValidValue);
+				_ConfigFileEntry.Value = _LastValidValue;
+			}
 			else _TypedValueFI.SetValue(_ConfigFileEntry, o);
 		}
 
@@ -71,7 +81,9 @@ namespace ModConfigEnforcer
 		{
 			object v = GetValue();
 			zpg.FillZPackage(GetValueType().IsEnum ? (int)v : v);
+			ValueChanged = false;
 		}
+
 		public bool Deserialize(ZPackage zpg) => false;
 	}
 
@@ -106,6 +118,8 @@ namespace ModConfigEnforcer
 
 		public T Value => _LocalOnly ? _ConfigFileEntry.Value : (ConfigManager.ShouldUseLocalConfig ? _ConfigFileEntry.Value : _LocalValue);
 
+		public bool ValueChanged { get; set; }
+
 		public string GetName() => Key;
 		public bool LocalOnly() => _LocalOnly;
 		public Type GetValueType() => typeof(T);
@@ -114,7 +128,11 @@ namespace ModConfigEnforcer
 		public void SetValue(object o)
 		{
 			T t = (T)o;
-			if (ConfigManager.ShouldUseLocalConfig) _ConfigFileEntry.Value = t;
+			if (ConfigManager.ShouldUseLocalConfig)
+			{
+				ValueChanged = !_ConfigFileEntry.Value.Equals(t);
+				_ConfigFileEntry.Value = t;
+			}
 			else _LocalValue = t;
 		}
 
@@ -122,6 +140,7 @@ namespace ModConfigEnforcer
 		{
 			object v = GetValue();
 			zpg.FillZPackage(GetValueType().IsEnum ? (int)v : v);
+			ValueChanged = false;
 		}
 
 		public bool Deserialize(ZPackage zpg) => false;
@@ -133,6 +152,12 @@ namespace ModConfigEnforcer
 
 		string Name;
 		public T Value => _Value;
+
+		public bool ValueChanged
+		{
+			get { return false; }
+			set { }
+		}
 
 		public ClientVariable(string name, T value)
 		{
@@ -156,7 +181,57 @@ namespace ModConfigEnforcer
 
 	public static class ConfigManager
 	{
-		const string ConfigRPCName = "SetConfigValues";
+		class PackageTrackerInfo
+		{
+			ZPackage[] Packages;
+			public int Received { get; private set; }
+			public int Total => Packages?.Length ?? 0;
+
+			// this assumes that the first ulong in zpg has been read already to know that it belongs in this PTI
+			public bool Add(ZPackage zpg)
+			{
+				int order = zpg.ReadInt();
+				int total = zpg.ReadInt();
+
+				Plugin.Log.LogDebug("Client received package " + order + " of " + total);
+
+				if (Packages == null)
+					Packages = new ZPackage[total];
+
+				if (Packages[order - 1] == null)
+				{
+					Packages[order - 1] = zpg;
+					return ++Received == total;
+				}
+				else return false;
+			}
+
+			public ZPackage GetPackage()
+			{
+				if (Received != Total) return null;
+
+				using (MemoryStream ms = new MemoryStream())
+				{
+					for (int i = 0; i < Packages.Length; i++)
+					{
+						byte[] data = Packages[i].ReadByteArray();
+						ms.Write(data, 0, data.Length);
+						Packages[i] = null;
+					}
+
+					Packages = null;
+
+					ms.Flush();
+					return new ZPackage(ms.ToArray());
+				}
+			}
+		}
+
+		static Dictionary<ulong, PackageTrackerInfo> PackageTracking = new Dictionary<ulong, PackageTrackerInfo>();
+
+		const string ConfigRPCName = "ClientReceiveConfigData";
+
+		static ulong LastPackageID;
 
 		public static event Action<string> UnknownModConfigReceived;
 
@@ -183,27 +258,56 @@ namespace ModConfigEnforcer
 				else return "automated discovery";
 			}
 
-			public void Serialize(ZPackage zpg)
+			public void SortVariables()
 			{
-				bool serialized = false;
-				foreach (var mcv in Variables)
-				{
-					if (mcv.LocalOnly()) continue;
-					if (!serialized)
-					{
-						serialized = true;
-						zpg.Write(Name);
-					}
-					mcv.Serialize(zpg);
-				}
+				Variables.Sort((a, b) => string.Compare(a.GetName(), b.GetName()));
 			}
 
+			public ZPackage Serialize(bool changesOnly = false)
+			{
+				ZPackage zpg = null;
+				bool serialized = false;
+				for (int i = 0; i < Variables.Count; i++)
+				{
+					if (Variables[i].LocalOnly()) continue;
+					if (!changesOnly || Variables[i].ValueChanged)
+					{
+						if (!serialized)
+						{
+							zpg = new ZPackage();
+							serialized = true;
+							zpg.Write(Name);
+						}
+						zpg.Write(i);
+						Variables[i].Serialize(zpg);
+					}
+				}
+
+				return zpg;
+			}
+
+			// because each mod serializes into its own ZPackage, we can assume all data in zpg is for us
 			public void Deserialize(ZPackage zpg)
 			{
-				foreach (var mcv in Variables)
+				Plugin.Log.LogDebug(System.Text.Encoding.Default.GetString(zpg.GetArray()));
+
+				while (zpg.m_reader.PeekChar() > -1)
 				{
-					if (mcv.LocalOnly()) continue;
-					zpg.ReadVariable(mcv);
+					int index = zpg.ReadInt();
+					if (index < 0 || index >= Variables.Count)
+					{
+						Plugin.Log.LogError("Invalid variable index " + index + " read from package, aborting deserialization for mod " + Name);
+						return;
+					}
+					try
+					{
+						zpg.ReadVariable(Variables[index]);
+					}
+					catch (Exception ex)
+					{
+						Plugin.Log.LogError("Exception deserializing variable " + Variables[index].GetName() + " @ " + index + " for mod " + Name + ": " + ex.Message);
+						return;
+					}
 				}
 			}
 		}
@@ -221,7 +325,7 @@ namespace ModConfigEnforcer
 
 		public static void RegisterRPC(ZRpc zrpc)
 		{
-			zrpc.Register<ZPackage>(ConfigRPCName, SetConfigValues);
+			zrpc.Register<ZPackage>(ConfigRPCName, ClientReceiveConfigData);
 		}
 
 		public static List<ModConfig> GetRegisteredModConfigs() => ModConfigs.Values.ToList();
@@ -253,8 +357,7 @@ namespace ModConfigEnforcer
 
 		static void ConfigFile_ConfigReloaded(object sender, EventArgs e)
 		{
-			if (!ZNet.instance) return;
-			if (!ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()) return;
+			if (ZNet.instance && !ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()) return;
 
 			List<ModConfig> updatedModConfigs = new List<ModConfig>();
 
@@ -264,7 +367,7 @@ namespace ModConfigEnforcer
 				mc.ConfigReloaded?.Invoke();
 			}
 
-			if (updatedModConfigs.Count > 0) SendConfigsToClients(updatedModConfigs);
+			if (updatedModConfigs.Count > 0) SendConfigsToClients(updatedModConfigs, true);
 		}
 
 		public static ConfigVariable<T> RegisterModConfigVariable<T>(string modName, string varName, T defaultValue, string configSection, string configDescription, bool localOnly)
@@ -303,6 +406,11 @@ namespace ModConfigEnforcer
 			if (!ModConfigs.TryGetValue(modName, out ModConfig mc)) return false;
 			mc.Variables.Add(cv);
 			return true;
+		}
+
+		public static void SortModVariables(string modName)
+		{
+			if (ModConfigs.TryGetValue(modName, out var mc)) mc.SortVariables();
 		}
 
 		static void ReadVariable(this ZPackage zp, IConfigVariable cv)
@@ -349,84 +457,130 @@ namespace ModConfigEnforcer
 			ZRpc.Serialize(ps, ref zp);
 		}
 
-		static bool SerializeMod(string modname, ZPackage zpg)
+		static ZPackage SerializeMod(string modname, bool changesOnly)
 		{
-			if (!ModConfigs.TryGetValue(modname, out var modconfig)) return false;
-			modconfig.Serialize(zpg);
-			return true;
+			if (!ModConfigs.TryGetValue(modname, out var modconfig)) return null;
+			return modconfig.Serialize(changesOnly);
 		}
 
-		public static void SendConfigToClient(string modname, long peerID = 0L)
+		public static ZPackage[] CompressPackage(ZPackage data)
 		{
-			if (!ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()) return;
-
-			ZPackage zpg = new ZPackage();
-			if (!SerializeMod(modname, zpg)) return;
-			zpg.SetPos(0);
-			ZNet.instance.m_routedRpc.InvokeRoutedRPC(peerID, ConfigRPCName, zpg);
-		}
-
-		static void SendConfigsToClients(List<ModConfig> list)
-		{
-			if (!ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()) return;
-
-			ZPackage zpg = new ZPackage();
-			foreach (string m in Mods)
+			var c = new Compressor();
+			var cd = c.Wrap(data.GetArray());
+			int chunks = cd.Length / 450000 + 1;
+			var tosend = new ZPackage[chunks];
+			int chunkSize = cd.Length / chunks;
+			byte[] tsc;
+			ZPackage zpg;
+			LastPackageID++;
+			//Plugin.Log.LogDebug("Creating " + chunks + " package" + (chunks > 1 ? "s" : "") + " for packageID " + LastPackageID);
+			for (int i = 0; i < chunks - 1; i++)
 			{
-				ZPackage mzpg = new ZPackage();
-				SerializeMod(m, mzpg);
-				if (zpg.Size() + mzpg.Size() > 500000)
-				{
-					zpg.SetPos(0);
-					ZNet.instance.m_routedRpc.InvokeRoutedRPC(ZNetView.Everybody, ConfigRPCName, zpg);
-					zpg = mzpg;
-				}
-				else zpg.Write(mzpg);
+				tsc = new byte[chunkSize];
+				Array.Copy(cd, i * chunkSize, tsc, 0, tsc.Length);
+				zpg = new ZPackage();
+				zpg.Write(LastPackageID);
+				zpg.Write(i + 1);
+				zpg.Write(chunks);
+				zpg.Write(tsc);
+				tosend[i] = zpg;
 			}
+			int lastChunkIndex = (chunks - 1) * chunkSize;
+			tsc = new byte[cd.Length - lastChunkIndex];
+			Array.Copy(cd, lastChunkIndex, tsc, 0, tsc.Length);
+			zpg = new ZPackage();
+			zpg.Write(LastPackageID);
+			zpg.Write(chunks);
+			zpg.Write(chunks);
+			zpg.Write(tsc);
+			tosend[tosend.Length - 1] = zpg;
+
+			return tosend;
+		}
+
+		public static void SendConfigToClient(string modname, bool changesOnly, long peerID = 0L)
+		{
+			if (!ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()) return;
+
+			ZPackage zpg = SerializeMod(modname, changesOnly);
+			if (zpg == null) return;
+
+			ZPackage[] tosend = CompressPackage(zpg);
+			for (int i = 0; i < tosend.Length; i++)
+				ZNet.instance.m_routedRpc.InvokeRoutedRPC(peerID, ConfigRPCName, tosend[i]);
+		}
+
+		static void SendConfigsToClients(List<ModConfig> list, bool changesOnly)
+		{
+			if (!ZNet.instance) return;
+			if (!ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()) return;
+
+			ZPackage zpg = new ZPackage();
+			foreach (var mc in list)
+			{
+				ZPackage mzpg = mc.Serialize(changesOnly);
+				if (mzpg != null) zpg.Write(mzpg);
+			}
+
 			if (zpg.Size() > 0)
 			{
-				zpg.SetPos(0);
-				ZNet.instance.m_routedRpc.InvokeRoutedRPC(ZNetView.Everybody, ConfigRPCName, zpg);
+				ZPackage[] tosend = CompressPackage(zpg);
+				for (int i = 0; i < tosend.Length; i++)
+					ZNet.instance.m_routedRpc.InvokeRoutedRPC(ZNetView.Everybody, ConfigRPCName, tosend[i]);
 			}
 		}
 
 		public static void SendConfigsToClient(ZRpc rpc)
 		{
+			if (!ZNet.instance) return;
 			if (!ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()) return;
 
-			ZPackage zpg = new ZPackage();
+			ZPackage data = new ZPackage();
 			foreach (string m in Mods)
 			{
-				ZPackage mzpg = new ZPackage();
-				SerializeMod(m, mzpg);
-				if (zpg.Size() + mzpg.Size() > 500000)
-				{
-					zpg.SetPos(0);
-					rpc.Invoke(ConfigRPCName, zpg);
-					zpg = mzpg;
-				}
-				else zpg.Write(mzpg);
+				ZPackage mzpg = SerializeMod(m, false);
+				if (mzpg != null) data.Write(mzpg);
 			}
-			if (zpg.Size() > 0)
+
+			if (data.Size() > 0)
 			{
-				zpg.SetPos(0);
-				rpc.Invoke(ConfigRPCName, zpg);
+				ZPackage[] tosend = CompressPackage(data);
+				for (int i = 0; i < tosend.Length; i++)
+					rpc.Invoke(ConfigRPCName, tosend[i]);
 			}
 		}
 
-		static void SetConfigValues(ZRpc rpc, ZPackage zpg)
+		static void ClientReceiveConfigData(ZRpc rpc, ZPackage data)
 		{
-			Plugin.Log.LogInfo("Client received SetConfigValues");
-
 			if (ZNet.instance.IsDedicated() || ZNet.instance.IsServer())
 			{
 				Plugin.Log.LogWarning("Server should not be sent config values!");
 				return;
 			}
 
+			ulong packageID = data.ReadULong();
+			if (!PackageTracking.TryGetValue(packageID, out var pti))
+			{
+				Plugin.Log.LogDebug("Client received new packageID " + packageID);
+				pti = new PackageTrackerInfo();
+				PackageTracking[packageID] = pti;
+			}
+
+			if (!pti.Add(data)) return;
+
+			SetConfigValues(pti.GetPackage());
+		}
+
+		static void SetConfigValues(ZPackage data)
+		{
 			ShouldUseLocalConfig = false;
 
 			Dictionary<string, ModConfig> mods = new Dictionary<string, ModConfig>();
+
+			// first decompress
+			Decompressor d = new Decompressor();
+			var dd = d.Unwrap(data.GetArray());
+			ZPackage zpg = new ZPackage(dd.ToArray());
 
 			try
 			{
@@ -453,7 +607,8 @@ namespace ModConfigEnforcer
 						Plugin.Log.LogDebug("Client updated with settings for mod " + m);
 					}
 
-					mzpg = zpg.ReadPackage();
+					if (zpg.m_reader.PeekChar() != -1) mzpg = zpg.ReadPackage();
+					else mzpg = null;
 				}
 			}
 			catch (Exception ex)

@@ -54,6 +54,9 @@ namespace ModConfigEnforcer
 			{
 				new Terminal.ConsoleCommand("mce", "shows info for Mod Config Enforcer", delegate (Terminal.ConsoleEventArgs args)
 				{
+					bool admin = !ZNet.instance || ZNet.instance.IsDedicated() || ZNet.instance.IsServer();
+					if (!admin) admin = Player.m_localPlayer && ZNet.instance.ListContainsId(ZNet.instance.m_adminList, ZNet.instance.GetPeer(Player.m_localPlayer.m_nview.GetZDO().m_uid.userID).m_rpc.GetSocket().GetHostName());
+
 					for (int i = 0; i < args.Args.Length; i++)
 					{
 						args.Args[i] = args[i].ToLower();
@@ -69,15 +72,16 @@ namespace ModConfigEnforcer
 								args.Context.AddString(".. " + mc.Name + " (" + mc.GetRegistrationType() + ")");
 							}
 						}
-						else if (args[1] == "reload" && (!ZNet.instance || ZNet.instance.IsDedicated() || ZNet.instance.IsServer()))
+						else if (args[1] == "reload")
 						{
-							args.Context.AddString(".. missing mod registration name");
+							if (admin) args.Context.AddString(".. missing mod registration name");
+							else args.Context.AddString("<color=orange>mce reload</color> is not available on clients in multiplayer.");
 						}
 						else args.Context.AddString(".. unknown command option '" + args[1] + "'");
 					}
 					else if (args.Length > 2)
 					{
-						if (args[1] == "reload" && (ZNet.instance && !ZNet.instance.IsDedicated() && !ZNet.instance.IsServer()))
+						if (args[1] == "reload" && !admin)
 						{
 							args.Context.AddString("<color=orange>mce reload</color> is not available on clients in multiplayer.");
 							return;
@@ -112,8 +116,8 @@ namespace ModConfigEnforcer
 						args.Context.AddString("<color=orange>mce</color> command supports the following options :");
 						args.Context.AddString("<color=yellow>list</color> - displays a list of each mod registered with MCE and their registration method");
 						args.Context.AddString("<color=yellow>list <mod registration name></color> - displays a list of all config options registered for the mod");
-						if (!ZNet.instance || ZNet.instance.IsDedicated() || ZNet.instance.IsServer())
-							args.Context.AddString("<color=yellow>reload <mod registration name></color> - reloads the config options from file for the mod (on servers, this will also send configs to all clients)");
+						if (admin)
+							args.Context.AddString("<color=yellow>reload <mod registration name></color> - reloads the config options from file for the mod (on servers, this will also send config updates to all clients)");
 					}
 				});
 			}

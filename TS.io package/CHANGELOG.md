@@ -1,3 +1,6 @@
+## 3.0.3
+* Fixed config file reloading to work at main menu
+
 ## 3.0.2
 * Fixed console commands so they can be run at the main menu
 

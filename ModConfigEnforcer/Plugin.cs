@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Reflection;
 using BepInEx;
 using BepInEx.Bootstrap;
@@ -11,13 +12,33 @@ namespace ModConfigEnforcer
 	[BepInPlugin("pfhoenix.modconfigenforcer", "Mod Config Enforcer", Plugin.Version)]
 	public class Plugin : BaseUnityPlugin
 	{
-		public const string Version = "3.0.2";
+		public const string Version = "4.0.0";
 		Harmony _Harmony;
 		public static ManualLogSource Log;
 
 		private void Awake()
 		{
 			Log = Logger;
+
+			var assembly = GetType().Assembly;
+			string[] dlls = { "libzstd", "ZstdNet" };
+			foreach (var dll in dlls)
+			{
+				var s = assembly.GetManifestResourceStream(assembly.GetName().Name + "." + dll + ".dll");
+				if (s == null) Log.LogError("Failed to load " + dll + ".dll from resource stream!");
+				else
+				{
+					var path = Paths.PluginPath + "\\" + dll + ".dll";
+					if (!File.Exists(path))
+					{
+						using (var destinationStream = new FileStream(path, FileMode.OpenOrCreate))
+						{
+							s.CopyTo(destinationStream);
+						}
+					}
+				}
+			}
+
 			_Harmony = Harmony.CreateAndPatchAll(Assembly.GetExecutingAssembly(), null);
 		}
 
@@ -87,8 +108,18 @@ namespace ModConfigEnforcer
 					}
 
 					if (bound == 0) Log.LogWarning("... no configuration found to enforce!");
+					else ConfigManager.SortModVariables(modName);
 				}
 			}
+		}
+
+		public static bool IsAdmin(Player player)
+		{
+			// at the main menu, so being admin makes sense
+			if (!ZNet.instance) return true;
+			if (!player) return false;
+			if (ZNet.instance.m_adminList == null) return false;
+			return ZNet.instance.ListContainsId(ZNet.instance.m_adminList, ZNet.instance.GetPeer(player.m_nview.GetZDO().m_uid.userID).m_rpc.GetSocket().GetHostName());
 		}
 
 		private void OnDestroy()
