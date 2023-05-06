@@ -1,5 +1,8 @@
-﻿using BepInEx.Configuration;
+﻿using System.Runtime.InteropServices;
+using System;
+using BepInEx.Configuration;
 using HarmonyLib;
+using Steamworks;
 
 namespace ModConfigEnforcer
 {
@@ -121,6 +124,81 @@ namespace ModConfigEnforcer
 					}
 				});
 			}
+		}
+
+		[HarmonyPatch(typeof(ZSteamSocket))]
+		public static class ZSteamSocketPatches
+		{
+			[HarmonyPrefix]
+			[HarmonyPatch("RegisterGlobalCallbacks")]
+			public static bool RegisterGlobalCallbacksPrefix()
+			{
+				if (Plugin.OptimizeNetworking.Value)
+				{
+					if (ZSteamSocket.m_statusChanged == null)
+					{
+						GCHandle gCHandle = GCHandle.Alloc(30000f, GCHandleType.Pinned);
+						GCHandle gCHandle2 = GCHandle.Alloc(1, GCHandleType.Pinned);
+						GCHandle nagle = GCHandle.Alloc(0, GCHandleType.Pinned);
+
+						try
+						{
+							ZSteamSocket.m_statusChanged = Callback<SteamNetConnectionStatusChangedCallback_t>.Create(ZSteamSocket.OnStatusChanged);
+							SteamNetworkingUtils.SetConfigValue(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_TimeoutConnected, ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global, IntPtr.Zero, ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Float, gCHandle.AddrOfPinnedObject());
+							SteamNetworkingUtils.SetConfigValue(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_IP_AllowWithoutAuth, ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global, IntPtr.Zero, ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32, gCHandle2.AddrOfPinnedObject());
+							SteamNetworkingUtils.SetConfigValue(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_NagleTime, ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global, IntPtr.Zero, ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32, nagle.AddrOfPinnedObject());
+						}
+						catch { }
+
+						try
+						{
+							ZSteamSocket.m_statusChanged = Callback<SteamNetConnectionStatusChangedCallback_t>.CreateGameServer(ZSteamSocket.OnStatusChanged);
+							SteamGameServerNetworkingUtils.SetConfigValue(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_TimeoutConnected, ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global, IntPtr.Zero, ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Float, gCHandle.AddrOfPinnedObject());
+							SteamGameServerNetworkingUtils.SetConfigValue(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_IP_AllowWithoutAuth, ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global, IntPtr.Zero, ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32, gCHandle2.AddrOfPinnedObject());
+							SteamGameServerNetworkingUtils.SetConfigValue(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_NagleTime, ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global, IntPtr.Zero, ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32, nagle.AddrOfPinnedObject());
+						}
+						catch { }
+
+						gCHandle.Free();
+						gCHandle2.Free();
+						nagle.Free();
+					}
+
+					return false;
+				}
+				else return true;
+			}
+
+			/*[HarmonyPostfix]
+			[HarmonyPatch("RegisterGlobalCallbacks")]
+			public static void RegisterGlobalCallbacksPostfix()
+			{
+				if (ZSteamSocket.m_statusChanged != null)
+				{
+					GCHandle nagle = GCHandle.Alloc((int)0, GCHandleType.Pinned);
+					GCHandle sendBufferSize = GCHandle.Alloc(1049000, GCHandleType.Pinned);
+					// for everybody but dedicated servers
+					try
+					{
+						SteamNetworkingUtils.SetConfigValue(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_NagleTime, ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global, IntPtr.Zero, ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32, nagle.AddrOfPinnedObject());
+						SteamNetworkingUtils.SetConfigValue(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMin, ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global, IntPtr.Zero, ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32, sendBufferSize.AddrOfPinnedObject());
+						SteamNetworkingUtils.SetConfigValue(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax, ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global, IntPtr.Zero, ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32, sendBufferSize.AddrOfPinnedObject());
+					}
+					catch { }
+
+					// for dedicated servers
+					try
+					{
+						SteamGameServerNetworkingUtils.SetConfigValue(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_NagleTime, ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global, IntPtr.Zero, ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32, nagle.AddrOfPinnedObject());
+						SteamGameServerNetworkingUtils.SetConfigValue(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMin, ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global, IntPtr.Zero, ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32, sendBufferSize.AddrOfPinnedObject());
+						SteamGameServerNetworkingUtils.SetConfigValue(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax, ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global, IntPtr.Zero, ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32, sendBufferSize.AddrOfPinnedObject());
+					}
+					catch { }
+
+					nagle.Free();
+					sendBufferSize.Free();
+				}
+			}*/
 		}
 	}
 }

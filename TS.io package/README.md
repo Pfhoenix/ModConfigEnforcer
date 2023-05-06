@@ -1,10 +1,14 @@
+UPDATE: Version 4.0 involves enough changes to completely deprecate previous versions. Any mods relying on versions 2.X will no long be supported and will have to update themselves. **MCE will now conflict with the Better Networking mod, due to both mods making changes to Valheim's networking subsystem. You can disable MCE's networking optimizations via its new config file. MCE now removes buffer limits for Steam users, making Better Networking unnecessary when using mods that also use MCE. This change was necessary to support the sending of large data packages in an optimized way.**
+
 UPDATE: Version 3.0 is a major version change due to breaking backwards compatibility. If you are a user, do not update MCE unless a mod you are using that uses it tells you to. This change is a lot less painful than the version 2 break, and the biggest benefit is the ability for mod authors to now take advantage of MCE syncing their configs without having a hard dependency on MCE. This means for playing by yourself, MCE isn't required to have. Mod authors can now, with a little code, have their mods be "MCE Compatible" with no required downloading or bundling.
 
 Mod Config Enforcer is a utility mod for mod authors. It allows them to support servers setting configs and then enforcing those settings onto connecting clients using their mod. The mod allows mod authors to define config variables that can be local only (no server enforcement) as well as server enforced.
 
 Manual Installation : Download and copy the ModConfigEnforcer.dll to your Valheim\Bepinex\plugins folder.
 
-If you are downloading MCE because another mod relies on it for server config enforcement, you're done!
+If you are downloading MCE because another mod relies on it for server config enforcement, you're done! When setup correctly, you will see two new DLL files created in the plugins folder, ZstdNet.dll and libzstd.dll. These files are necessary for MCE to compress and decompress ZPackage data for optimal performance.
+
+-----
 
 Hard dependency usage is still supported as it's the best way to do more complex configuration management with MCE, but it is no longer the only option. MCE v3 now supports config-by-convention, which is very easy to setup and ideal for smaller mods which simply use ConfigEntry objects for their Bepinex config. For a mod to be MCE compatible with automated config discovery, simply follow this example :
 
@@ -15,6 +19,8 @@ Hard dependency usage is still supported as it's the best way to do more complex
    ﻿object AutomatedConfigDiscovery;
    ﻿// this field will be discovered and picked up by MCE
    ﻿public ConfigEntry<int> Something;
+   // this field will be discovered and picked up by MCE, with the value expected to be a full path to a file you want servers to sync to clients
+   ﻿public string File_TestFile = "C:\Steam\steamapps\common\Valheim\BepInEx\plugins\testfile.txt";
    ﻿// this field will be ignored by MCE and thus not synced from servers to clients
    ﻿[NonSerialized]
    ﻿public ConfigEntry<bool> OtherVar;
@@ -31,6 +37,9 @@ Hard dependency usage is still supported as it's the best way to do more complex
    ﻿// these are entirely optional. If you don't have them, your mod simply won't get a callback for when these events happen
    ﻿void ServerConfigReceived() {}
    ﻿void ConfigReloaded() {}
+
+﻿   // if file syncing is desired, this method is required to exist
+﻿   void FileChanged() {}
 }
 ```
 
@@ -95,6 +104,7 @@ namespace YourMod
         {
             ConfigManager.RegisterMod(ModName, Config, ServerConfigReceived, ConfigReloaded);
             TestVariable = ConfigManager.RegisterModConfigVariable<bool>(ModName, "Test Variable", true, "General", "Just a test variable, doesn't do anything.", false);
+	        FileVariable = ConfigManager.RegisterModFileWatcher(ModName, Path.Combine(Path.GetDirectoryName(Info.Location), "test.png"), false, FileChanged);
             _Harmony = Harmony.CreateAndPatchAll(Assembly.GetExecutingAssembly(), null);
         }
     
@@ -110,6 +120,10 @@ namespace YourMod
  ﻿   ﻿    private void ConfigReloaded()
  ﻿   ﻿    {
 ﻿        }
+
+﻿﻿﻿        private void FileChanged()
+        ﻿﻿{
+        ﻿﻿}
     }
 }
 ```

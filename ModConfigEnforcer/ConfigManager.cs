@@ -29,6 +29,8 @@ namespace ModConfigEnforcer
 		/// <param name="zpg">The ZPackage object received by the client</param>
 		/// <returns>Whether or not the deserialization was successful</returns>
 		bool Deserialize(ZPackage zpg);
+
+		void Cleanup();
 	}
 
 	// need a new class, AutomatedConfigWrapper<T> : IConfigVariable
@@ -85,6 +87,8 @@ namespace ModConfigEnforcer
 		}
 
 		public bool Deserialize(ZPackage zpg) => false;
+
+		public void Cleanup() { }
 	}
 
 	public class ConfigVariable<T> : IConfigVariable
@@ -144,13 +148,15 @@ namespace ModConfigEnforcer
 		}
 
 		public bool Deserialize(ZPackage zpg) => false;
+
+		public void Cleanup() { }
 	}
 
 	public class ClientVariable<T> : IConfigVariable
 	{
 		T _Value;
 
-		string Name;
+		string _Name;
 		public T Value => _Value;
 
 		public bool ValueChanged
@@ -161,11 +167,11 @@ namespace ModConfigEnforcer
 
 		public ClientVariable(string name, T value)
 		{
-			Name = name;
+			_Name = name;
 			_Value = value;
 		}
 
-		public string GetName() => Name;
+		public string GetName() => _Name;
 		public object GetValue() => Value;
 		public Type GetValueType() => typeof(T);
 
@@ -177,6 +183,125 @@ namespace ModConfigEnforcer
 		public bool LocalOnly() => true;
 		public void Serialize(ZPackage zpg) { }
 		public bool Deserialize(ZPackage zpg) => false;
+		public void Cleanup() { }
+	}
+
+	public class FileWatcherVariable : IConfigVariable
+	{
+		ConfigManager.ModConfig _Mod;
+		string _Name;
+		bool _LocalOnly;
+		ZPackage _FileContents;
+		string WatchedFilePath;
+		string RelativePath;
+		FileSystemWatcher FSW;
+
+		public bool ValueChanged { get; set; }
+
+		Action<string, ZPackage> FileContentsChanged;
+
+		int GetLengthOfPathCommonality(string path1, string path2)
+		{
+			path1 = Path.GetFullPath(path1).ToLower();
+			path2 = Path.GetFullPath(path2).ToLower();
+			int length = -1;
+			int maxLength = Mathf.Min(path1.Length, path2.Length);
+			for (int i = 0; i < maxLength; i++)
+			{
+				if (path1[i] != path2[i])
+				{
+					if (path1[i] == Path.DirectorySeparatorChar || path1[i] == Path.AltDirectorySeparatorChar)
+					{
+						if (path2[i] == Path.DirectorySeparatorChar || path2[i] == Path.AltDirectorySeparatorChar)
+						{
+							length = i + 1;
+						}
+						else break;
+					}
+					else if (path2[i] == Path.DirectorySeparatorChar || path2[i] == Path.AltDirectorySeparatorChar) break;
+				}
+				else if (path1[i] == Path.DirectorySeparatorChar || path1[i] == Path.AltDirectorySeparatorChar)
+					length = i + 1;
+			}
+
+			return length;
+		}
+
+		/// <summary>
+		/// </summary>
+		/// <param name="filepath">Complete path to file. Must include full filename. Putting in wildcards for the filename will cause Very Bad Things for your file data.</param>
+		/// <param name="localOnly"></param>
+		public FileWatcherVariable(ConfigManager.ModConfig mod, string filepath, bool localOnly, Action<string, ZPackage> handler)
+		{
+			_Mod = mod;
+			WatchedFilePath = filepath;
+			int rpl = GetLengthOfPathCommonality(WatchedFilePath, Assembly.GetCallingAssembly().Location);
+			if (rpl == -1) RelativePath = WatchedFilePath;
+			else RelativePath = WatchedFilePath.Substring(rpl);
+			Plugin.Log.LogInfo("Watching " + WatchedFilePath + " with RelativePath " + RelativePath);
+			FSW = new FileSystemWatcher(Path.GetDirectoryName(WatchedFilePath));
+			FSW.Filter = Path.GetFileName(filepath);
+			FSW.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size;
+			FSW.IncludeSubdirectories = false;
+
+			_Name = "FileWatcher_" + FSW.Filter;
+			_LocalOnly = localOnly;
+
+			if (File.Exists(WatchedFilePath)) _FileContents = new ZPackage(File.ReadAllBytes(WatchedFilePath));
+			else _FileContents = new ZPackage();
+
+			FileContentsChanged = handler;
+
+			FSW.Changed += FSW_Changed;
+
+			FSW.EnableRaisingEvents = true;
+		}
+
+		private void FSW_Changed(object sender, FileSystemEventArgs e)
+		{
+			if (_LocalOnly || ConfigManager.ShouldUseLocalConfig)
+			{
+				_FileContents = new ZPackage(File.ReadAllBytes(WatchedFilePath));
+
+				// invoke callback for file contents changed
+				FileContentsChanged?.Invoke(RelativePath, _FileContents);
+
+				// only the server or admin should be updating other clients
+				if (!_LocalOnly && ZNet.instance && Plugin.IsAdmin(Player.m_localPlayer)) ConfigManager.SendConfigToClient(_Mod.Name, true);
+			}
+		}
+
+		public string GetName() => _Name;
+		public bool LocalOnly() => _LocalOnly;
+		public object GetValue() => _FileContents;
+		public Type GetValueType() => typeof(ZPackage);
+
+		public void SetValue(object o)
+		{
+			// without doing a byte by byte comparison, there's no way to know if contents have changed
+			// because we expect to be dealing with sizable files, for performance reasons we're just
+			//   going to assume a change happened
+
+			// ZPackages given here are assumed to consist only of the expected file contents
+			ValueChanged = true;
+			var zpg = o as ZPackage;
+			_FileContents = new ZPackage(zpg.GetArray());
+
+			// invoke callback for file contents changed
+			FileContentsChanged?.Invoke(RelativePath, _FileContents);
+		}
+
+		public void Serialize(ZPackage zpg)
+		{
+			zpg.Write(_FileContents);
+		}
+
+		public bool Deserialize(ZPackage zpg) => false;
+
+		public void Cleanup()
+		{
+			FSW.Dispose();
+		}
 	}
 
 	public static class ConfigManager
@@ -289,8 +414,6 @@ namespace ModConfigEnforcer
 			// because each mod serializes into its own ZPackage, we can assume all data in zpg is for us
 			public void Deserialize(ZPackage zpg)
 			{
-				Plugin.Log.LogDebug(System.Text.Encoding.Default.GetString(zpg.GetArray()));
-
 				while (zpg.m_reader.PeekChar() > -1)
 				{
 					int index = zpg.ReadInt();
@@ -310,6 +433,12 @@ namespace ModConfigEnforcer
 					}
 				}
 			}
+
+			public void Cleanup()
+			{
+				foreach (var v in Variables)
+					v.Cleanup();
+			}
 		}
 
 		public static bool ShouldUseLocalConfig = true;
@@ -328,8 +457,8 @@ namespace ModConfigEnforcer
 			zrpc.Register<ZPackage>(ConfigRPCName, ClientReceiveConfigData);
 		}
 
-		public static List<ModConfig> GetRegisteredModConfigs() => ModConfigs.Values.ToList();
-		public static ModConfig GetRegisteredModConfig(string name, bool ignoreCase)
+		internal static List<ModConfig> GetRegisteredModConfigs() => ModConfigs.Values.ToList();
+		internal static ModConfig GetRegisteredModConfig(string name, bool ignoreCase)
 		{
 			if (!ignoreCase)
 			{
@@ -408,6 +537,14 @@ namespace ModConfigEnforcer
 			return true;
 		}
 
+		public static FileWatcherVariable RegisterModFileWatcher(string modName, string filePath, bool localOnly, Action<string, ZPackage> handler)
+		{
+			if (!ModConfigs.TryGetValue(modName, out ModConfig mc)) return null;
+			FileWatcherVariable fwv = new FileWatcherVariable(mc, filePath, localOnly, handler);
+			mc.Variables.Add(fwv);
+			return fwv;
+		}
+
 		public static void SortModVariables(string modName)
 		{
 			if (ModConfigs.TryGetValue(modName, out var mc)) mc.SortVariables();
@@ -473,7 +610,6 @@ namespace ModConfigEnforcer
 			byte[] tsc;
 			ZPackage zpg;
 			LastPackageID++;
-			//Plugin.Log.LogDebug("Creating " + chunks + " package" + (chunks > 1 ? "s" : "") + " for packageID " + LastPackageID);
 			for (int i = 0; i < chunks - 1; i++)
 			{
 				tsc = new byte[chunkSize];
@@ -507,7 +643,9 @@ namespace ModConfigEnforcer
 
 			ZPackage[] tosend = CompressPackage(zpg);
 			for (int i = 0; i < tosend.Length; i++)
+			{
 				ZNet.instance.m_routedRpc.InvokeRoutedRPC(peerID, ConfigRPCName, tosend[i]);
+			}
 		}
 
 		static void SendConfigsToClients(List<ModConfig> list, bool changesOnly)
@@ -526,7 +664,9 @@ namespace ModConfigEnforcer
 			{
 				ZPackage[] tosend = CompressPackage(zpg);
 				for (int i = 0; i < tosend.Length; i++)
+				{
 					ZNet.instance.m_routedRpc.InvokeRoutedRPC(ZNetView.Everybody, ConfigRPCName, tosend[i]);
+				}
 			}
 		}
 
@@ -545,8 +685,7 @@ namespace ModConfigEnforcer
 			if (data.Size() > 0)
 			{
 				ZPackage[] tosend = CompressPackage(data);
-				for (int i = 0; i < tosend.Length; i++)
-					rpc.Invoke(ConfigRPCName, tosend[i]);
+				Plugin.instance.SendDataToZRpc(rpc, ConfigRPCName, tosend);
 			}
 		}
 
@@ -623,6 +762,8 @@ namespace ModConfigEnforcer
 		public static void ClearModConfigs()
 		{
 			Mods.Clear();
+			foreach (var mc in ModConfigs.Values)
+				mc.Cleanup();
 			ModConfigs.Clear();
 			AutomatedConfigsLocked.Clear();
 		}

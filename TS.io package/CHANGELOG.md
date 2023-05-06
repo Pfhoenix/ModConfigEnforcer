@@ -1,3 +1,13 @@
+## 4.0.1
+* Fixed runtime exception from config variable registration
+
+## 4.0.0
+* Implemented sending of only updated congfig settings when changes happen at runtime.
+* Implemented breaking up of large data into multiple, tracked chunks to clients.
+* Implemented compression of sent data.
+* Implemented arbitrary file syncing with filesystem watching.
+* Implemented automated config discovery of file syncing variables.
+
 ## 3.0.3
 * Fixed config file reloading to work at main menu
 

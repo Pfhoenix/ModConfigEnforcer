@@ -1,4 +1,5 @@
-﻿using System.Reflection;
+﻿using System.IO;
+using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
@@ -17,6 +18,7 @@ namespace MCE_Test
 
 		public object AutomatedConfigDiscovery;
 		public ConfigEntry<int> TestInt;
+		public string File_TestFile;
 
 		private void Awake()
 		{
@@ -28,6 +30,7 @@ namespace MCE_Test
 			_Harmony = Harmony.CreateAndPatchAll(Assembly.GetExecutingAssembly(), null);
 
 			AutomatedConfigDiscovery = this;
+			File_TestFile = Path.Combine(Path.GetDirectoryName(Info.Location), "test.png");
 			TestInt = Config.Bind<int>("test", "TestInt", 12);
 		}
 
@@ -39,6 +42,11 @@ namespace MCE_Test
 		void ServerConfigReceived()
 		{
 			Log.LogInfo("MCE Test received server config! TestInt set to " + TestInt.Value);
+		}
+
+		void FileChanged(string file, ZPackage data)
+		{
+			File.WriteAllBytes(Path.Combine(Path.GetDirectoryName(File_TestFile), "received.png"), data.GetArray());
 		}
 	}
 }

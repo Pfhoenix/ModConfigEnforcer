@@ -1,23 +1,31 @@
 ﻿using System;
+using System.Collections;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using BepInEx;
 using BepInEx.Bootstrap;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
+using UnityEngine;
 
 namespace ModConfigEnforcer
 {
 	[BepInPlugin("pfhoenix.modconfigenforcer", "Mod Config Enforcer", Plugin.Version)]
 	public class Plugin : BaseUnityPlugin
 	{
-		public const string Version = "4.0.0";
+		public const string Version = "4.0.1";
 		Harmony _Harmony;
 		public static ManualLogSource Log;
+		public static Plugin instance;
+
+		public static ConfigVariable<bool> OptimizeNetworking;
 
 		private void Awake()
 		{
+			instance = this;
+
 			Log = Logger;
 
 			var assembly = GetType().Assembly;
@@ -38,6 +46,9 @@ namespace ModConfigEnforcer
 					}
 				}
 			}
+
+			ConfigManager.RegisterMod("_MCE_", Config);
+			OptimizeNetworking = ConfigManager.RegisterModConfigVariable("_MCE_", "Optimize Networking", true, "Networking", "Optimize Valheim's networking subsystem", true);
 
 			_Harmony = Harmony.CreateAndPatchAll(Assembly.GetExecutingAssembly(), null);
 		}
@@ -91,9 +102,7 @@ namespace ModConfigEnforcer
 					int bound = 0;
 					foreach (var field in fields)
 					{
-						if (field.IsNotSerialized) continue;
-
-						if (field.FieldType.IsSubclassOf(typeof(ConfigEntryBase)))
+						if (field.FieldType.IsSubclassOf(typeof(ConfigEntryBase)) && !field.IsNotSerialized)
 						{
 							if (modName == null)
 							{
@@ -101,9 +110,25 @@ namespace ModConfigEnforcer
 								ConfigManager.RegisterMod(modName, pi.Instance.Config, scr, null);
 							}
 							var tcmmi = cmmi.MakeGenericMethod(field.FieldType.GetGenericArguments()[0]);
-							tcmmi.Invoke(null, new object[] { modName, field.GetValue(pi.Instance) });
+							tcmmi.Invoke(null, new object[] { modName, field.GetValue(automatedConfigDiscovery) });
 							Log.LogDebug("... bound " + field.Name);
 							bound++;
+						}
+						else if (field.FieldType == typeof(string) && field.Name.StartsWith("File_"))
+						{
+							string varname = field.Name.Substring(5);
+							var fcm = methods.FirstOrDefault(m => string.Compare(m.Name, "FileChanged", true) == 0);
+							if (fcm != null)
+							{
+								if (modName == null)
+								{
+									modName = pi.Metadata.Name;
+									ConfigManager.RegisterMod(modName, pi.Instance.Config, scr, null);
+								}
+								ConfigManager.RegisterModFileWatcher(modName, (string)field.GetValue(automatedConfigDiscovery), field.IsNotSerialized, (Action<string, ZPackage>)Delegate.CreateDelegate(typeof(Action<string, ZPackage>), automatedConfigDiscovery, fcm));
+								Log.LogDebug("... bound " + field.Name);
+								bound++;
+							}
 						}
 					}
 
@@ -112,6 +137,35 @@ namespace ModConfigEnforcer
 				}
 			}
 		}
+
+		/*class ZRpcSendInfo
+		{
+			public ZRpc Peer;
+			public string RPCName;
+			public ZPackage Data;
+		}*/
+
+		//Queue<ZRpcSendInfo>
+
+		IEnumerator SendDataViaZRpc(ZRpc peer, string rpc, ZPackage[] zpgs)
+		{
+			for (int i = 0; i < zpgs.Length; i++)
+			{
+				peer.GetSocket().Flush();
+				peer.Invoke(rpc, zpgs[i]);
+				yield return new WaitForSecondsRealtime(1f);
+			}
+		}
+
+		public void SendDataToZRpc(ZRpc peer, string rpc, ZPackage[] data)
+		{
+			StartCoroutine(SendDataViaZRpc(peer, rpc, data));
+		}
+
+		/*void Update()
+		{
+
+		}*/
 
 		public static bool IsAdmin(Player player)
 		{
